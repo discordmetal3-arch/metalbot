@@ -19,14 +19,14 @@ http.createServer((req, res) => {
 const commands = [
     new SlashCommandBuilder()
         .setName('vetorizar')
-        .setDescription('🤖 IA separa cada elemento da imagem em camadas para CorelDraw')
+        .setDescription('🤖 IA vetoriza a imagem inteira para CorelDraw')
         .addAttachmentOption(o =>
             o.setName('imagem').setDescription('Imagem PNG ou JPG').setRequired(true)
         )
         .addIntegerOption(o =>
             o.setName('cores')
-             .setDescription('Nº de elementos/cores (padrão: 16, máx: 32)')
-             .setMinValue(2).setMaxValue(32).setRequired(false)
+             .setDescription('Nº de cores (padrão: 8 | menos = mais limpo)')
+             .setMinValue(2).setMaxValue(16).setRequired(false)
         )
         .toJSON(),
 ];
@@ -82,7 +82,7 @@ function pathSVGparaEPS(d, alturaTotal) {
             }
             else if (cmd === 'c') {
                 const rx1=n(),ry1=n(),rx2=n(),ry2=n(),rdx=n(),rdy=n();
-                const ax1=cx+rx1,ay1=cy+ry1,ax2=cx+rx2,ay2=cy+ry2;
+                const ax1=cx+rx1, ay1=cy+ry1, ax2=cx+rx2, ay2=cy+ry2;
                 cx+=rdx; cy+=rdy;
                 ps += `${ax1.toFixed(4)} ${flip(ay1)} ${ax2.toFixed(4)} ${flip(ay2)} ${cx.toFixed(4)} ${flip(cy)} curveto\n`;
             }
@@ -119,9 +119,15 @@ function gerarEPS(caminhos, width, height) {
     return Buffer.from(linhas.join('\n'), 'utf-8');
 }
 
-async function vectorizar(imageBuffer, maxCores = 16) {
-    const quantizado = await sharp(imageBuffer)
-        .resize({ width: 900, height: 900, fit: 'inside', withoutEnlargement: true })
+async function vectorizar(imageBuffer, maxCores = 8) {
+    // 1. Filtro mediano remove pixel isolado de ruído antes de quantizar
+    const preprocessado = await sharp(imageBuffer)
+        .resize({ width: 800, height: 800, fit: 'inside', withoutEnlargement: true })
+        .median(5)
+        .toBuffer();
+
+    // 2. Quantiza em paleta fechada — sem dither para bordas limpas
+    const quantizado = await sharp(preprocessado)
         .png({ palette: true, colors: maxCores, dither: 0 })
         .toBuffer();
 
@@ -156,11 +162,11 @@ async function vectorizar(imageBuffer, maxCores = 16) {
         const d = await new Promise((resolve) => {
             potrace.trace(maskPng, {
                 threshold:    128,
-                blackOnWhite: false, // ← CRÍTICO: traça as áreas BRANCAS (cores), não o fundo preto
-                turdSize:     2,
+                blackOnWhite: false,
+                turdSize:     40,   // ← remove fragmentos pequenos (era 2, agora 40)
                 alphaMax:     1.0,
                 optCurve:     true,
-                optTolerance: 0.2,
+                optTolerance: 0.5,  // ← curvas mais suaves
             }, (err, svg) => {
                 if (err) { resolve(null); return; }
                 const m = svg.match(/d="([^"]+)"/);
@@ -177,7 +183,7 @@ async function vectorizar(imageBuffer, maxCores = 16) {
     const svgStr = [
         `<?xml version="1.0" encoding="UTF-8" standalone="no"?>`,
         `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
-        `  <!-- Metalbot IA | ${caminhos.length} elementos | Potrace Engine -->`,
+        `  <!-- Metalbot IA | ${caminhos.length} cores | Potrace Engine -->`,
         ...caminhos.map(({ r, g, b, d }, idx) => {
             const hex = '#'+r.toString(16).padStart(2,'0')+g.toString(16).padStart(2,'0')+b.toString(16).padStart(2,'0');
             return `  <g id="elemento_${idx+1}" fill="${hex}" stroke="none">\n    <path d="${d}"/>\n  </g>`;
@@ -206,7 +212,7 @@ client.on('interactionCreate', async (interaction) => {
     await interaction.deferReply();
 
     const imagem   = interaction.options.getAttachment('imagem');
-    const maxCores = interaction.options.getInteger('cores') || 16;
+    const maxCores = interaction.options.getInteger('cores') || 8;
 
     const nome = (imagem.name || '').toLowerCase();
     const url  = (imagem.url  || '').toLowerCase().split('?')[0];
@@ -222,23 +228,23 @@ client.on('interactionCreate', async (interaction) => {
         console.log(`[${new Date().toISOString()}] Vetorizando para ${interaction.user.tag}...`);
 
         await interaction.editReply(
-            `🤖 **IA analisando sua imagem...**\n🔬 Isolando cada elemento com Potrace Engine.\n⏳ Aguarde até 1 minuto.`
+            `🤖 **IA processando...**\n🔬 Limpando ruído e vetorizando com Potrace.\n⏳ Aguarde.`
         );
 
         const resposta = await axios.get(imagem.url, { responseType: 'arraybuffer', timeout: 30000 });
         const { svg, eps, width, height, totalCores } = await vectorizar(Buffer.from(resposta.data), maxCores);
 
         if (svg.length > 8_000_000 || eps.length > 8_000_000)
-            return interaction.editReply(`⚠️ Arquivo passou de 8 MB. Use \`/vetorizar cores:8\`.`);
+            return interaction.editReply(`⚠️ Arquivo passou de 8 MB. Use \`/vetorizar cores:4\`.`);
 
         const nomeBase = (imagem.name || 'imagem').replace(/\.[^.]+$/, '');
 
         await interaction.editReply({
             content:
                 `✅ **Vetorização concluída!**\n` +
-                `🧩 **${totalCores} elementos** isolados | ${width}×${height}px\n\n` +
+                `🎨 **${totalCores} cores** | ${width}×${height}px\n\n` +
                 `📄 \`${nomeBase}.svg\` — abre em qualquer editor\n` +
-                `🎯 \`${nomeBase}.eps\` — **abre direto no CorelDraw**, cada cor = objeto separado`,
+                `🎯 \`${nomeBase}.eps\` — **abre direto no CorelDraw**`,
             files: [
                 { attachment: svg, name: `${nomeBase}.svg` },
                 { attachment: eps, name: `${nomeBase}.eps` },
