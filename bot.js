@@ -3,23 +3,26 @@ const axios = require('axios');
 const FormData = require('form-data');
 const http = require('http'); 
 
-// Configurações principais
+// Configurações principais puxadas do seu painel do Render
 const OWNER_ID = '1522577752916496476';
 const TOKEN = process.env.TOKEN; 
 const CLIENT_ID = process.env.CLIENT_ID; 
 
-// Suas chaves do Vectorizer.AI do painel
+// Suas chaves do Vectorizer.AI inseridas diretamente
 const VECTORIZER_API_ID = 'vkvqc2s3evqv89a';
 const VECTORIZER_API_SECRET = 'hnq4d5kftg2m579bnsbeddujma2qlpadmm6fkquohi07lbivdh15';
 
-// Servidor Web para o Render não dar timeout de porta
+// -----------------------------------------------------------------
+// SERVIDOR HTTP PARA O UPTIMEROBOT PINGAR (Evita sleep no Render)
+// -----------------------------------------------------------------
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Bot Metalbot online e operando com sucesso!\n');
+    res.end('Metalbot Online 24/7!\n');
 }).listen(PORT, () => {
-    console.log(`Servidor de monitoramento escutando na porta ${PORT}`);
+    console.log(`Servidor HTTP ativo na porta ${PORT}. Pronto para receber pings!`);
 });
+// -----------------------------------------------------------------
 
 const client = new Client({
     intents: [
@@ -31,6 +34,7 @@ const client = new Client({
 
 let logChannelId = null;
 
+// Definição dos comandos / do bot
 const commands = [
     new SlashCommandBuilder()
         .setName('versao')
@@ -51,10 +55,11 @@ const commands = [
                 .setRequired(true))
 ].map(command => command.toJSON());
 
+// Evento quando o bot conecta no Discord
 client.once('ready', async () => {
     console.log(`Bot logado com sucesso como: ${client.user.tag}`);
 
-    // Registra os comandos com o CLIENT_ID das variáveis do Render
+    // Registra os comandos automaticamente usando as variáveis salvas no Render
     if (TOKEN && CLIENT_ID) {
         const rest = new REST({ version: '10' }).setToken(TOKEN);
         try {
@@ -68,7 +73,7 @@ client.once('ready', async () => {
             console.error('Erro ao registrar comandos:', error);
         }
     } else {
-        console.log('⚠️ Alerta: CLIENT_ID ou TOKEN ausentes nas variáveis do Render.');
+        console.log('⚠️ Erro: CLIENT_ID ou TOKEN faltando no painel do Render.');
     }
 
     const GUILD_ID = '1522581516532584538';
@@ -99,6 +104,7 @@ client.once('ready', async () => {
     }
 });
 
+// Execução dos comandos slash
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
     const { commandName, guild } = interaction;
@@ -164,6 +170,7 @@ client.on('interactionCreate', async interaction => {
     }
 });
 
+// Sistema de captura de erros
 async function reportarErroCritico(origem, erro) {
     if (logChannelId) {
         try {
