@@ -19,13 +19,13 @@ http.createServer((req, res) => {
 const commands = [
     new SlashCommandBuilder()
         .setName('vetorizar')
-        .setDescription('🤖 IA separa cada elemento da imagem em camadas vetoriais editáveis no CorelDraw')
+        .setDescription('🤖 IA separa cada elemento da imagem em camadas para CorelDraw')
         .addAttachmentOption(o =>
             o.setName('imagem').setDescription('Imagem PNG ou JPG').setRequired(true)
         )
         .addIntegerOption(o =>
             o.setName('cores')
-             .setDescription('Nº de elementos/cores separados (padrão: 16, máx: 32)')
+             .setDescription('Nº de elementos/cores (padrão: 16, máx: 32)')
              .setMinValue(2).setMaxValue(32).setRequired(false)
         )
         .toJSON(),
@@ -42,38 +42,52 @@ async function registrarComandos() {
     }
 }
 
-// ── Conversor SVG path → PostScript (EPS) ─────────────────────────────────────
-function pathParaPS(d, height) {
-    const tokens = d.match(/[MmLlCcHhVvZz]|[-+]?(?:\d*\.\d+|\d+)(?:[eE][-+]?\d+)?/g) || [];
+function tokenizarPath(d) {
+    const tokens = [];
+    const re = /([MmLlCcHhVvSsQqTtAaZz])|([+-]?(?:\d*\.\d+|\d+\.?\d*)(?:[eE][+-]?\d+)?)/g;
+    let m;
+    while ((m = re.exec(d)) !== null) {
+        if (m[1]) tokens.push({ tipo: 'cmd', val: m[1] });
+        else      tokens.push({ tipo: 'num', val: parseFloat(m[2]) });
+    }
+    return tokens;
+}
+
+function pathSVGparaEPS(d, alturaTotal) {
+    const tokens = tokenizarPath(d);
+    const flip   = y => (alturaTotal - y).toFixed(4);
     let ps = '';
-    let i = 0;
-    let cmd = 'M';
+    let i  = 0;
     let cx = 0, cy = 0;
-    const flip = y => (height - y).toFixed(4);
+    const temNum = () => i < tokens.length && tokens[i].tipo === 'num';
+    const n      = () => tokens[i++].val;
 
     while (i < tokens.length) {
-        const t = tokens[i];
-        if (/[MmLlCcHhVvZz]/.test(t)) { cmd = t; i++; continue; }
-        const n = () => parseFloat(tokens[i++]);
-
-        if      (cmd === 'M') { cx = n(); cy = n(); ps += `${cx.toFixed(4)} ${flip(cy)} moveto\n`; cmd = 'L'; }
-        else if (cmd === 'm') { cx += n(); cy += n(); ps += `${cx.toFixed(4)} ${flip(cy)} moveto\n`; cmd = 'l'; }
-        else if (cmd === 'L') { cx = n(); cy = n(); ps += `${cx.toFixed(4)} ${flip(cy)} lineto\n`; }
-        else if (cmd === 'l') { cx += n(); cy += n(); ps += `${cx.toFixed(4)} ${flip(cy)} lineto\n`; }
-        else if (cmd === 'H') { cx = n(); ps += `${cx.toFixed(4)} ${flip(cy)} lineto\n`; }
-        else if (cmd === 'h') { cx += n(); ps += `${cx.toFixed(4)} ${flip(cy)} lineto\n`; }
-        else if (cmd === 'V') { cy = n(); ps += `${cx.toFixed(4)} ${flip(cy)} lineto\n`; }
-        else if (cmd === 'v') { cy += n(); ps += `${cx.toFixed(4)} ${flip(cy)} lineto\n`; }
-        else if (cmd === 'C') {
-            const x1=n(),y1=n(),x2=n(),y2=n(); cx=n(); cy=n();
-            ps += `${x1.toFixed(4)} ${flip(y1)} ${x2.toFixed(4)} ${flip(y2)} ${cx.toFixed(4)} ${flip(cy)} curveto\n`;
-        }
-        else if (cmd === 'c') {
-            const x1=cx+n(),y1=cy+n(),x2=cx+n(),y2=cy+n(); cx+=n(); cy+=n();
-            ps += `${x1.toFixed(4)} ${flip(y1)} ${x2.toFixed(4)} ${flip(y2)} ${cx.toFixed(4)} ${flip(cy)} curveto\n`;
-        }
-        else if (cmd === 'Z' || cmd === 'z') { ps += `closepath\n`; }
-        else { i++; }
+        if (tokens[i].tipo !== 'cmd') { i++; continue; }
+        const cmd = tokens[i++].val;
+        if (cmd === 'Z' || cmd === 'z') { ps += `closepath\n`; continue; }
+        do {
+            if (!temNum()) break;
+            if      (cmd === 'M') { cx=n(); cy=n(); ps += `${cx.toFixed(4)} ${flip(cy)} moveto\n`; }
+            else if (cmd === 'm') { cx+=n(); cy+=n(); ps += `${cx.toFixed(4)} ${flip(cy)} moveto\n`; }
+            else if (cmd === 'L') { cx=n(); cy=n(); ps += `${cx.toFixed(4)} ${flip(cy)} lineto\n`; }
+            else if (cmd === 'l') { cx+=n(); cy+=n(); ps += `${cx.toFixed(4)} ${flip(cy)} lineto\n`; }
+            else if (cmd === 'H') { cx=n(); ps += `${cx.toFixed(4)} ${flip(cy)} lineto\n`; }
+            else if (cmd === 'h') { cx+=n(); ps += `${cx.toFixed(4)} ${flip(cy)} lineto\n`; }
+            else if (cmd === 'V') { cy=n(); ps += `${cx.toFixed(4)} ${flip(cy)} lineto\n`; }
+            else if (cmd === 'v') { cy+=n(); ps += `${cx.toFixed(4)} ${flip(cy)} lineto\n`; }
+            else if (cmd === 'C') {
+                const x1=n(),y1=n(),x2=n(),y2=n(); cx=n(); cy=n();
+                ps += `${x1.toFixed(4)} ${flip(y1)} ${x2.toFixed(4)} ${flip(y2)} ${cx.toFixed(4)} ${flip(cy)} curveto\n`;
+            }
+            else if (cmd === 'c') {
+                const rx1=n(),ry1=n(),rx2=n(),ry2=n(),rdx=n(),rdy=n();
+                const ax1=cx+rx1,ay1=cy+ry1,ax2=cx+rx2,ay2=cy+ry2;
+                cx+=rdx; cy+=rdy;
+                ps += `${ax1.toFixed(4)} ${flip(ay1)} ${ax2.toFixed(4)} ${flip(ay2)} ${cx.toFixed(4)} ${flip(cy)} curveto\n`;
+            }
+            else { if (temNum()) n(); else break; }
+        } while (temNum());
     }
     return ps;
 }
@@ -85,29 +99,26 @@ function gerarEPS(caminhos, width, height) {
         `%%HiResBoundingBox: 0.000 0.000 ${width.toFixed(3)} ${height.toFixed(3)}`,
         `%%Creator: Metalbot IA - Potrace Engine`,
         `%%Title: Vetor CorelDraw`,
-        `%%CreationDate: ${new Date().toISOString()}`,
         `%%Pages: 1`,
         `%%EndComments`,
         `%%Page: 1 1`,
         `gsave`,
     ];
-
     for (let idx = 0; idx < caminhos.length; idx++) {
         const { r, g, b, d } = caminhos[idx];
-        linhas.push(`% --- Elemento ${idx + 1} ---`);
+        const ps = pathSVGparaEPS(d, height);
+        if (!ps.trim()) continue;
+        linhas.push(`% Elemento ${idx + 1}`);
         linhas.push(`gsave`);
         linhas.push(`${(r/255).toFixed(4)} ${(g/255).toFixed(4)} ${(b/255).toFixed(4)} setrgbcolor`);
         linhas.push(`newpath`);
-        linhas.push(pathParaPS(d, height).trim());
-        linhas.push(`closepath fill`);
-        linhas.push(`grestore`);
+        linhas.push(ps.trim());
+        linhas.push(`fill grestore`);
     }
-
-    linhas.push(`grestore`, `%%Trailer`, `%%EOF`);
+    linhas.push(`grestore`, `showpage`, `%%Trailer`, `%%EOF`);
     return Buffer.from(linhas.join('\n'), 'utf-8');
 }
 
-// ── Engine de vetorização com Potrace ─────────────────────────────────────────
 async function vectorizar(imageBuffer, maxCores = 16) {
     const quantizado = await sharp(imageBuffer)
         .resize({ width: 900, height: 900, fit: 'inside', withoutEnlargement: true })
@@ -144,10 +155,15 @@ async function vectorizar(imageBuffer, maxCores = 16) {
 
         const d = await new Promise((resolve) => {
             potrace.trace(maskPng, {
-                threshold: 128, turdSize: 2, alphaMax: 1.0, optCurve: true, optTolerance: 0.2,
+                threshold:    128,
+                blackOnWhite: false, // ← CRÍTICO: traça as áreas BRANCAS (cores), não o fundo preto
+                turdSize:     2,
+                alphaMax:     1.0,
+                optCurve:     true,
+                optTolerance: 0.2,
             }, (err, svg) => {
                 if (err) { resolve(null); return; }
-                const m = svg.match(/\sd="([^"]+)"/);
+                const m = svg.match(/d="([^"]+)"/);
                 resolve(m ? m[1] : null);
             });
         });
@@ -156,27 +172,26 @@ async function vectorizar(imageBuffer, maxCores = 16) {
     }
 
     if (caminhos.length === 0)
-        throw new Error('Nenhum elemento vetorizável. Tente uma imagem com mais contraste.');
+        throw new Error('Nenhum elemento vetorizável. Use imagem com fundo sólido e bom contraste.');
 
-    const svgPartes = caminhos.map(({ r, g, b, d }, idx) => {
-        const hex = `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
-        return `  <g id="elemento_${idx+1}_${hex}" fill="${hex}" stroke="none">\n    <path d="${d}"/>\n  </g>`;
-    });
-
-    const svg = Buffer.from([
-        `<?xml version="1.0" encoding="UTF-8"?>`,
-        `<!-- Metalbot IA | ${caminhos.length} elementos | Potrace Engine -->`,
+    const svgStr = [
+        `<?xml version="1.0" encoding="UTF-8" standalone="no"?>`,
         `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
-        ...svgPartes,
+        `  <!-- Metalbot IA | ${caminhos.length} elementos | Potrace Engine -->`,
+        ...caminhos.map(({ r, g, b, d }, idx) => {
+            const hex = '#'+r.toString(16).padStart(2,'0')+g.toString(16).padStart(2,'0')+b.toString(16).padStart(2,'0');
+            return `  <g id="elemento_${idx+1}" fill="${hex}" stroke="none">\n    <path d="${d}"/>\n  </g>`;
+        }),
         `</svg>`,
-    ].join('\n'), 'utf-8');
+    ].join('\n');
 
-    const eps = gerarEPS(caminhos, width, height);
-
-    return { svg, eps, width, height, totalCores: caminhos.length };
+    return {
+        svg: Buffer.from(svgStr, 'utf-8'),
+        eps: gerarEPS(caminhos, width, height),
+        width, height, totalCores: caminhos.length
+    };
 }
 
-// ── Cliente Discord ────────────────────────────────────────────────────────────
 const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 client.once('ready', async () => {
@@ -204,43 +219,36 @@ client.on('interactionCreate', async (interaction) => {
         return interaction.editReply('❌ Formato inválido. Envie apenas **PNG** ou **JPG**.');
 
     try {
-        console.log(`[${new Date().toISOString()}] Vetorizando para ${interaction.user.tag} (${maxCores} elementos)...`);
+        console.log(`[${new Date().toISOString()}] Vetorizando para ${interaction.user.tag}...`);
 
         await interaction.editReply(
-            `🤖 **IA analisando sua imagem...**\n` +
-            `🔬 Isolando cada elemento por cor com Potrace Engine.\n` +
-            `⏳ Aguarde até 1 minuto.`
+            `🤖 **IA analisando sua imagem...**\n🔬 Isolando cada elemento com Potrace Engine.\n⏳ Aguarde até 1 minuto.`
         );
 
         const resposta = await axios.get(imagem.url, { responseType: 'arraybuffer', timeout: 30000 });
         const { svg, eps, width, height, totalCores } = await vectorizar(Buffer.from(resposta.data), maxCores);
 
         if (svg.length > 8_000_000 || eps.length > 8_000_000)
-            return interaction.editReply(`⚠️ Arquivo passou de 8 MB. Use \`/vetorizar cores:8\` para reduzir.`);
+            return interaction.editReply(`⚠️ Arquivo passou de 8 MB. Use \`/vetorizar cores:8\`.`);
 
         const nomeBase = (imagem.name || 'imagem').replace(/\.[^.]+$/, '');
-        const svgMB = (svg.length / 1024 / 1024).toFixed(2);
-        const epsMB = (eps.length / 1024 / 1024).toFixed(2);
 
         await interaction.editReply({
             content:
-                `✅ **Vetorização concluída pela IA!**\n` +
-                `🧩 **${totalCores} elementos** isolados via **Potrace Engine** | ${width}×${height}px\n\n` +
-                `📄 \`${nomeBase}.svg\` — ${svgMB} MB — abre em qualquer editor vetorial\n` +
-                `🎯 \`${nomeBase}.eps\` — ${epsMB} MB — **abre direto no CorelDraw**, cada cor = objeto separado e editável`,
+                `✅ **Vetorização concluída!**\n` +
+                `🧩 **${totalCores} elementos** isolados | ${width}×${height}px\n\n` +
+                `📄 \`${nomeBase}.svg\` — abre em qualquer editor\n` +
+                `🎯 \`${nomeBase}.eps\` — **abre direto no CorelDraw**, cada cor = objeto separado`,
             files: [
                 { attachment: svg, name: `${nomeBase}.svg` },
                 { attachment: eps, name: `${nomeBase}.eps` },
             ],
         });
 
-        console.log(`[${new Date().toISOString()}] ✅ ${totalCores} elementos | SVG ${svgMB}MB | EPS ${epsMB}MB`);
-
     } catch (error) {
         console.error('[ERRO]', error.message);
         return interaction.editReply(
-            `❌ Erro: **${error.message}**\n` +
-            `Dica: PNG/JPG com fundo sólido, até 10 MB. Tente \`/vetorizar cores:8\` para imagens complexas.`
+            `❌ Erro: **${error.message}**\nDica: PNG/JPG com fundo sólido, até 10 MB.`
         );
     }
 });
