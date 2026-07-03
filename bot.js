@@ -2,10 +2,8 @@ const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ChannelTyp
 const axios = require('axios');
 const FormData = require('form-data');
 
-// Configurações principais puxadas das variáveis de ambiente do Render
 const OWNER_ID = '1522577752916496476';
 const TOKEN = process.env.TOKEN; 
-const CLIENT_ID = process.env.CLIENT_ID; // Vai puxar o ID correto que você colocar no Render
 
 const client = new Client({
     intents: [
@@ -17,7 +15,6 @@ const client = new Client({
 
 let logChannelId = null;
 
-// Definição dos Comandos Slash
 const commands = [
     new SlashCommandBuilder()
         .setName('versao')
@@ -38,65 +35,54 @@ const commands = [
                 .setRequired(true))
 ].map(command => command.toJSON());
 
-// Registro dos comandos na API do Discord
-if (TOKEN && CLIENT_ID) {
-    const rest = new REST({ version: '10' }).setToken(TOKEN);
-    (async () => {
-        try {
-            console.log('Iniciando o registro dos comandos / (Slash Commands)...');
-            await rest.put(
-                Routes.applicationCommands(CLIENT_ID),
-                { body: commands },
-            );
-            console.log('Comandos / registrados com sucesso globalmente!');
-        } catch (error) {
-            console.error('Erro ao registrar comandos:', error);
-        }
-    })();
-} else {
-    console.log('⚠️ TOKEN ou CLIENT_ID ausentes nas Environment Variables. Registro de comandos ignorado.');
-}
-
 // Evento: Bot Online
 client.once('ready', async () => {
     console.log(`Bot logado com sucesso como: ${client.user.tag}`);
+
+    // Pega o ID do bot automaticamente para registrar os comandos locais
+    try {
+        const rest = new REST({ version: '10' }).setToken(TOKEN);
+        console.log('Iniciando o registro dos comandos / (Slash Commands)...');
+        await rest.put(
+            Routes.applicationCommands(client.user.id),
+            { body: commands },
+        );
+        console.log('Comandos / registrados com sucesso globalmente!');
+    } catch (error) {
+        console.error('Erro ao registrar comandos:', error);
+    }
 
     const GUILD_ID = '1522581516532584538';
     let msgConvite = '';
 
     try {
-        // Tenta buscar o servidor para gerar o convite solicitado
         const guild = await client.guilds.fetch(GUILD_ID);
         if (guild) {
             const canal = guild.channels.cache.find(c => c.isTextBased() && c.permissionsFor(client.user).has(PermissionFlagsBits.CreateInstantInvite));
-            
             if (canal) {
                 const invite = await canal.createInvite({ maxAge: 0, maxUses: 0 });
                 msgConvite = `\n\n🔗 **Convite criado para o servidor:** ${invite.url}`;
             } else {
-                msgConvite = `\n\n⚠️ Não consegui criar o convite. Verifique se tenho a permissão 'Criar Convite' no servidor.`;
+                msgConvite = `\n\n⚠️ Sem permissão de 'Criar Convite' no servidor.`;
             }
         }
     } catch (guildError) {
-        msgConvite = `\n\n⚠️ Não consegui gerar o convite do servidor. O bot precisa estar dentro do ID ${GUILD_ID} primeiro!`;
+        msgConvite = `\n\n⚠️ O bot precisa estar dentro do servidor ID ${GUILD_ID} para gerar o convite!`;
     }
 
-    // Envia mensagem na DM do Owner
     try {
         const owner = await client.users.fetch(OWNER_ID);
         if (owner) {
-            await owner.send(`🟢 **Notificação do Sistema:** O bot de vetorização profissional está online e operando no Render!${msgConvite}`);
-            console.log(`Aviso de inicialização enviado para o ID ${OWNER_ID}`);
+            await owner.send(`🟢 **Notificação do Sistema:** O bot está online no Render!${msgConvite}`);
         }
     } catch (dmError) {
-        console.error(`Não foi possível enviar DM para o Owner (${OWNER_ID}). Adicione o bot no seu servidor para liberar o canal de DM.`, dmError);
+        console.error(`Não foi possível enviar DM para o Owner.`, dmError);
     }
 });
 
 // Gerenciador de Interações
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
-
     const { commandName, guild } = interaction;
 
     if (commandName === 'versao') {
@@ -104,8 +90,7 @@ client.on('interactionCreate', async interaction => {
     }
 
     if (commandName === 'online') {
-        const ping = client.ws.ping;
-        return interaction.reply({ content: `🟢 **Bot Online e Operante!**\n⏱️ Latência da API: \`${ping}ms\``, ephemeral: true });
+        return interaction.reply({ content: `🟢 **Bot Online!**\n⏱️ Latência: \`${client.ws.ping}ms\``, ephemeral: true });
     }
 
     if (commandName === 'erros_criticos') {
@@ -120,12 +105,10 @@ client.on('interactionCreate', async interaction => {
                     { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
                 ],
             });
-
             logChannelId = channel.id;
-            return interaction.editReply({ content: `✅ Canal de logs criado com sucesso: ${channel}.` });
+            return interaction.editReply({ content: `✅ Canal de logs criado: ${channel}.` });
         } catch (error) {
-            console.error(error);
-            return interaction.editReply({ content: `❌ Falha ao criar o canal de logs.` });
+            return interaction.editReply({ content: `❌ Falha ao criar o canal.` });
         }
     }
 
@@ -134,12 +117,11 @@ client.on('interactionCreate', async interaction => {
         const imagem = interaction.options.getAttachment('imagem');
 
         if (!imagem.contentType.startsWith('image/')) {
-            return interaction.editReply({ content: '❌ Por favor, envie um arquivo de imagem válido (PNG, JPG ou WEBP).' });
+            return interaction.editReply({ content: '❌ Envie uma imagem válida (PNG ou JPG).' });
         }
 
         try {
             const responseImagem = await axios.get(imagem.url, { responseType: 'stream' });
-
             const form = new FormData();
             form.append('image', responseImagem.data);
             form.append('mode', 'test'); 
@@ -154,41 +136,29 @@ client.on('interactionCreate', async interaction => {
             });
 
             await interaction.editReply({
-                content: `🎨 Aqui está a sua imagem vetorizada profissionalmente, ${interaction.user}!`,
-                files: [{
-                    attachment: Buffer.from(apiResponse.data),
-                    name: 'resultado_vetorizado.svg'
-                }]
+                content: `🎨 Imagem vetorizada, ${interaction.user}!`,
+                files: [{ attachment: Buffer.from(apiResponse.data), name: 'resultado_vetorizado.svg' }]
             });
-
         } catch (error) {
-            console.error('Erro ao vetorizar imagem:', error);
-            if (typeof reportarErroCritico === 'function') {
-                reportarErroCritico('API Vectorizer.AI /vetorizar', error);
-            }
-            return interaction.editReply({ content: '❌ Ocorreu um erro ao tentar processar e vetorizar essa imagem com a IA.' });
+            if (logChannelId) reportarErroCritico('API Vectorizer.AI', error);
+            return interaction.editReply({ content: '❌ Erro ao processar a imagem na IA.' });
         }
     }
 });
 
 async function reportarErroCritico(origem, erro) {
-    console.error(`[ERRO CRÍTICO - ${origem}]:`, erro);
     if (logChannelId) {
         try {
             const channel = await client.channels.fetch(logChannelId);
-            if (channel && channel.isTextBased()) {
-                await channel.send({
-                    content: `🚨 **[ERRO CRÍTICO DO SISTEMA]**\n**Origem:** ${origem}\n\`\`\`js\n${erro.stack || erro}\n\`\`\``
-                });
+            if (channel?.isTextBased()) {
+                await channel.send(`🚨 **[ERRO CRÍTICO]**\n**Origem:** ${origem}\n\`\`\`js\n${erro.stack || erro}\n\`\`\``);
             }
-        } catch (e) {
-            console.error('Falha ao enviar mensagem de erro para o canal de log:', e);
-        }
+        } catch (e) { console.error(e); }
     }
 }
 
 process.on('uncaughtException', (err) => reportarErroCritico('uncaughtException', err));
 process.on('unhandledRejection', (reason) => reportarErroCritico('unhandledRejection', reason));
-client.on('error', (err) => reportarErroCritico('Discord Client Error', err));
+client.on('error', (err) => reportarErroCritico('Discord Error', err));
 
 client.login(TOKEN);
