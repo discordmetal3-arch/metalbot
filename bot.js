@@ -1,17 +1,14 @@
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder } = require('discord.js');
-const axios = require('axios');
-const FormData = require('form-data');
-const http = require('http');
+const axios   = require('axios');
+const sharp   = require('sharp');
+const potrace = require('potrace');
+const http    = require('http');
 
-const TOKEN                 = process.env.TOKEN;
-const CLIENT_ID             = process.env.CLIENT_ID;
-const VECTORIZER_API_ID     = process.env.VECTORIZER_API_ID;
-const VECTORIZER_API_SECRET = process.env.VECTORIZER_API_SECRET;
+const TOKEN     = process.env.TOKEN;
+const CLIENT_ID = process.env.CLIENT_ID;
 
-if (!TOKEN)                  throw new Error('Faltando variável de ambiente: TOKEN');
-if (!CLIENT_ID)              throw new Error('Faltando variável de ambiente: CLIENT_ID');
-if (!VECTORIZER_API_ID)      throw new Error('Faltando variável de ambiente: VECTORIZER_API_ID');
-if (!VECTORIZER_API_SECRET)  throw new Error('Faltando variável de ambiente: VECTORIZER_API_SECRET');
+if (!TOKEN)     throw new Error('Faltando variável de ambiente: TOKEN');
+if (!CLIENT_ID) throw new Error('Faltando variável de ambiente: CLIENT_ID');
 
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
@@ -22,12 +19,16 @@ http.createServer((req, res) => {
 const commands = [
     new SlashCommandBuilder()
         .setName('vetorizar')
-        .setDescription('Vetoriza uma imagem PNG/JPG para SVG editável no CorelDraw')
-        .addAttachmentOption(option =>
-            option
-                .setName('imagem')
-                .setDescription('Imagem PNG ou JPG para vetorizar')
-                .setRequired(true)
+        .setDescription('🤖 IA analisa e separa cada elemento da imagem em camadas vetoriais para CorelDraw')
+        .addAttachmentOption(o =>
+            o.setName('imagem').setDescription('Imagem PNG ou JPG').setRequired(true)
+        )
+        .addIntegerOption(o =>
+            o.setName('cores')
+             .setDescription('Quantidade de elementos/cores separados (padrão: 16, máx: 32)')
+             .setMinValue(2)
+             .setMaxValue(32)
+             .setRequired(false)
         )
         .toJSON(),
 ];
@@ -36,17 +37,88 @@ const rest = new REST({ version: '10' }).setToken(TOKEN);
 
 async function registrarComandos() {
     try {
-        console.log('Registrando slash commands...');
         await rest.put(Routes.applicationCommands(CLIENT_ID), { body: commands });
-        console.log('✅ Slash commands registrados com sucesso!');
+        console.log('✅ Slash commands registrados!');
     } catch (err) {
-        console.error('Erro ao registrar slash commands:', err);
+        console.error('Erro ao registrar commands:', err.message);
     }
 }
 
-const client = new Client({
-    intents: [GatewayIntentBits.Guilds],
-});
+async function vectorizar(imageBuffer, maxCores = 16) {
+    const quantizado = await sharp(imageBuffer)
+        .resize({ width: 900, height: 900, fit: 'inside', withoutEnlargement: true })
+        .png({ palette: true, colors: maxCores, dither: 0 })
+        .toBuffer();
+
+    const { data, info } = await sharp(quantizado)
+        .ensureAlpha()
+        .raw()
+        .toBuffer({ resolveWithObject: true });
+
+    const { width, height } = info;
+    const channels = 4;
+
+    const contagem = new Map();
+    for (let i = 0; i < data.length; i += channels) {
+        if (data[i + 3] < 10) continue;
+        const key = `${data[i]},${data[i+1]},${data[i+2]}`;
+        contagem.set(key, (contagem.get(key) || 0) + 1);
+    }
+
+    const cores = [...contagem.entries()]
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, maxCores)
+        .map(([key]) => key.split(',').map(Number));
+
+    console.log(`  → ${cores.length} elementos/cores detectados`);
+
+    const caminhos = [];
+    for (const [r, g, b] of cores) {
+        const maskData = Buffer.alloc(width * height, 0);
+        for (let i = 0; i < data.length; i += channels) {
+            if (data[i] === r && data[i+1] === g && data[i+2] === b) {
+                maskData[Math.floor(i / channels)] = 255;
+            }
+        }
+
+        const maskPng = await sharp(maskData, {
+            raw: { width, height, channels: 1 }
+        }).png().toBuffer();
+
+        const d = await new Promise((resolve) => {
+            potrace.trace(maskPng, {
+                threshold: 128, turdSize: 2,
+                alphaMax: 1.0, optCurve: true, optTolerance: 0.2,
+            }, (err, svg) => {
+                if (err) { resolve(null); return; }
+                const m = svg.match(/\sd="([^"]+)"/);
+                resolve(m ? m[1] : null);
+            });
+        });
+
+        if (d) caminhos.push({ r, g, b, d });
+    }
+
+    if (caminhos.length === 0)
+        throw new Error('Nenhum elemento gerado. Tente uma imagem com mais contraste.');
+
+    const svgPartes = caminhos.map(({ r, g, b, d }, idx) => {
+        const hex = `#${r.toString(16).padStart(2,'0')}${g.toString(16).padStart(2,'0')}${b.toString(16).padStart(2,'0')}`;
+        return `  <g id="elemento_${idx+1}_${hex}" fill="${hex}" stroke="none">\n    <path d="${d}"/>\n  </g>`;
+    });
+
+    const svg = [
+        `<?xml version="1.0" encoding="UTF-8"?>`,
+        `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="${height}" viewBox="0 0 ${width} ${height}">`,
+        `  <!-- Metalbot IA | ${caminhos.length} elementos vetorizados individualmente -->`,
+        ...svgPartes,
+        `</svg>`,
+    ].join('\n');
+
+    return { svg: Buffer.from(svg, 'utf-8'), width, height, totalCores: caminhos.length };
+}
+
+const client = new Client({ intents: [GatewayIntentBits.Guilds] });
 
 client.once('ready', async () => {
     console.log(`✅ Bot logado como: ${client.user.tag}`);
@@ -57,102 +129,54 @@ client.on('interactionCreate', async (interaction) => {
     if (!interaction.isChatInputCommand()) return;
     if (interaction.commandName !== 'vetorizar') return;
 
-    // CRÍTICO: responde em menos de 3s para não dar "O aplicativo não respondeu"
     await interaction.deferReply();
 
-    const imagem = interaction.options.getAttachment('imagem');
+    const imagem   = interaction.options.getAttachment('imagem');
+    const maxCores = interaction.options.getInteger('cores') || 16;
 
     const nome = (imagem.name || '').toLowerCase();
+    const url  = (imagem.url  || '').toLowerCase().split('?')[0];
     const tipoValido =
-        (imagem.contentType && (
-            imagem.contentType.includes('image/png') ||
-            imagem.contentType.includes('image/jpeg')
-        )) ||
-        nome.endsWith('.png') ||
-        nome.endsWith('.jpg') ||
-        nome.endsWith('.jpeg');
+        nome.endsWith('.png') || nome.endsWith('.jpg') || nome.endsWith('.jpeg') ||
+        url.endsWith('.png')  || url.endsWith('.jpg')  || url.endsWith('.jpeg')  ||
+        (imagem.contentType && imagem.contentType.startsWith('image/'));
 
-    if (!tipoValido) {
+    if (!tipoValido)
         return interaction.editReply('❌ Formato inválido. Envie apenas **PNG** ou **JPG**.');
-    }
 
     try {
-        console.log(`[${new Date().toISOString()}] Vetorizando para ${interaction.user.tag}...`);
-        const responseImagem = await axios.get(imagem.url, {
-            responseType: 'arraybuffer',
-            timeout: 30000,
-        });
+        console.log(`[${new Date().toISOString()}] Vetorizando para ${interaction.user.tag} (${maxCores} elementos)...`);
 
-        const form = new FormData();
-        form.append('image', Buffer.from(responseImagem.data), {
-            filename: imagem.name || 'image.png',
-            contentType: imagem.contentType || 'image/png',
-        });
-
-        form.append('output.group_by', 'color');
-        form.append('processing.max_colors', '256');
-        form.append('output.curves.line_straighten', '0');
-        form.append('output.curves.splice_threshold', '0.5');
-        form.append('output.size.scale', '1.0');
-
-        console.log(`[${new Date().toISOString()}] Enviando para Vectorizer.ai...`);
-
-        const apiResponse = await axios.post(
-            'https://vectorizer.ai/api/v1/vectorize',
-            form,
-            {
-                headers: { ...form.getHeaders() },
-                auth: {
-                    username: VECTORIZER_API_ID,
-                    password: VECTORIZER_API_SECRET,
-                },
-                responseType: 'arraybuffer',
-                timeout: 120000,
-            }
+        await interaction.editReply(
+            `🤖 **IA processando sua imagem...**\n` +
+            `🔍 Analisando e separando cada elemento por cor e forma.\n` +
+            `⏳ Isso pode levar até 1 minuto dependendo da complexidade.`
         );
 
-        const svgBuffer = Buffer.from(apiResponse.data);
-        const tamanhoMB = svgBuffer.length / (1024 * 1024);
+        const resposta = await axios.get(imagem.url, { responseType: 'arraybuffer', timeout: 30000 });
+        const { svg, width, height, totalCores } = await vectorizar(Buffer.from(resposta.data), maxCores);
 
-        if (tamanhoMB > 8) {
-            return interaction.editReply(
-                '⚠️ O SVG gerado passou de 8 MB (limite do Discord).\n' +
-                'Tente enviar uma imagem com menos detalhes ou resolução menor.'
-            );
-        }
+        const tamanhoMB = svg.length / (1024 * 1024);
+
+        if (tamanhoMB > 8)
+            return interaction.editReply('⚠️ SVG passou de 8 MB. Use `/vetorizar cores:8` para reduzir.');
 
         await interaction.editReply({
             content:
-                `✅ **Vetorização concluída!**\n` +
-                `📐 Elementos agrupados por cor — abra o SVG no **CorelDraw** e cada cor estará como objeto separado e editável.\n` +
-                `📁 Tamanho: ${tamanhoMB.toFixed(2)} MB`,
-            files: [{ attachment: svgBuffer, name: 'vetor_corel.svg' }],
+                `✅ **Vetorização concluída pela IA!**\n` +
+                `🧩 **${totalCores} elementos** separados individualmente — cada um é um objeto \`<g>\` independente no **CorelDraw**.\n` +
+                `📏 ${width}×${height}px | 📁 ${tamanhoMB.toFixed(2)} MB\n` +
+                `💡 No CorelDraw: abra o SVG → cada cor aparece como objeto separado, clique e edite livremente.`,
+            files: [{ attachment: svg, name: 'vetor_corel.svg' }],
         });
 
+        console.log(`[${new Date().toISOString()}] ✅ ${totalCores} elementos, ${tamanhoMB.toFixed(2)} MB`);
+
     } catch (error) {
-        let detalheErro = '';
-
-        if (error.response) {
-            const status = error.response.status;
-            try {
-                const corpo = Buffer.from(error.response.data).toString('utf-8');
-                const json  = JSON.parse(corpo);
-                detalheErro = json.error_message || json.message || corpo;
-            } catch {
-                detalheErro = `HTTP ${status}`;
-            }
-
-            if (status === 401) return interaction.editReply('❌ Credenciais da API inválidas. Verifique `VECTORIZER_API_ID` e `VECTORIZER_API_SECRET` no Render.');
-            if (status === 402) return interaction.editReply('❌ Créditos da conta Vectorizer.ai esgotados. Recarregue em vectorizer.ai.');
-            if (status === 413) return interaction.editReply('❌ Imagem muito grande. Envie uma imagem menor que 10 MB.');
-            if (status === 429) return interaction.editReply('❌ Limite de requisições atingido. Aguarde e tente novamente.');
-        } else if (error.code === 'ECONNABORTED') {
-            return interaction.editReply('❌ A API demorou mais de 2 minutos. Tente uma imagem menor.');
-        }
-
+        console.error('[ERRO]', error.message);
         return interaction.editReply(
-            `❌ Falha na vetorização: **${detalheErro || error.message}**\n` +
-            'Dicas: envie PNG/JPG com fundo simples, tamanho até 5 MB.'
+            `❌ Erro no processamento: **${error.message}**\n` +
+            'Dica: envie PNG/JPG com fundo de cor sólida e tamanho até 10 MB.'
         );
     }
 });
