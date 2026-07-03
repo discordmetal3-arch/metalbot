@@ -1,9 +1,25 @@
 const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ChannelType, PermissionFlagsBits } = require('discord.js');
 const axios = require('axios');
 const FormData = require('form-data');
+const http = require('http'); 
 
+// Configurações principais
 const OWNER_ID = '1522577752916496476';
 const TOKEN = process.env.TOKEN; 
+const CLIENT_ID = process.env.CLIENT_ID; 
+
+// Suas chaves do Vectorizer.AI do painel
+const VECTORIZER_API_ID = 'vkvqc2s3evqv89a';
+const VECTORIZER_API_SECRET = 'hnq4d5kftg2m579bnsbeddujma2qlpadmm6fkquohi07lbivdh15';
+
+// Servidor Web para o Render não dar timeout de porta
+const PORT = process.env.PORT || 3000;
+http.createServer((req, res) => {
+    res.writeHead(200, { 'Content-Type': 'text/plain' });
+    res.end('Bot Metalbot online e operando com sucesso!\n');
+}).listen(PORT, () => {
+    console.log(`Servidor de monitoramento escutando na porta ${PORT}`);
+});
 
 const client = new Client({
     intents: [
@@ -35,21 +51,24 @@ const commands = [
                 .setRequired(true))
 ].map(command => command.toJSON());
 
-// Evento: Bot Online
 client.once('ready', async () => {
     console.log(`Bot logado com sucesso como: ${client.user.tag}`);
 
-    // Pega o ID do bot automaticamente para registrar os comandos locais
-    try {
+    // Registra os comandos com o CLIENT_ID das variáveis do Render
+    if (TOKEN && CLIENT_ID) {
         const rest = new REST({ version: '10' }).setToken(TOKEN);
-        console.log('Iniciando o registro dos comandos / (Slash Commands)...');
-        await rest.put(
-            Routes.applicationCommands(client.user.id),
-            { body: commands },
-        );
-        console.log('Comandos / registrados com sucesso globalmente!');
-    } catch (error) {
-        console.error('Erro ao registrar comandos:', error);
+        try {
+            console.log('Iniciando o registro dos comandos / (Slash Commands)...');
+            await rest.put(
+                Routes.applicationCommands(CLIENT_ID),
+                { body: commands },
+            );
+            console.log('Comandos / registrados com sucesso globalmente!');
+        } catch (error) {
+            console.error('Erro ao registrar comandos:', error);
+        }
+    } else {
+        console.log('⚠️ Alerta: CLIENT_ID ou TOKEN ausentes nas variáveis do Render.');
     }
 
     const GUILD_ID = '1522581516532584538';
@@ -80,7 +99,6 @@ client.once('ready', async () => {
     }
 });
 
-// Gerenciador de Interações
 client.on('interactionCreate', async interaction => {
     if (!interaction.isChatInputCommand()) return;
     const { commandName, guild } = interaction;
@@ -129,19 +147,19 @@ client.on('interactionCreate', async interaction => {
             const apiResponse = await axios.post('https://vectorizer.ai/api/v1/vectorize', form, {
                 headers: { ...form.getHeaders() },
                 auth: {
-                    username: process.env.VECTORIZER_API_ID,
-                    password: process.env.VECTORIZER_API_SECRET
+                    username: VECTORIZER_API_ID,
+                    password: VECTORIZER_API_SECRET
                 },
                 responseType: 'arraybuffer'
             });
 
             await interaction.editReply({
-                content: `🎨 Imagem vetorizada, ${interaction.user}!`,
+                content: `🎨 Imagem vetorizada com sucesso, ${interaction.user}!`,
                 files: [{ attachment: Buffer.from(apiResponse.data), name: 'resultado_vetorizado.svg' }]
             });
         } catch (error) {
             if (logChannelId) reportarErroCritico('API Vectorizer.AI', error);
-            return interaction.editReply({ content: '❌ Erro ao processar a imagem na IA.' });
+            return interaction.editReply({ content: '❌ Erro ao processar a imagem na IA do Vectorizer.' });
         }
     }
 });
