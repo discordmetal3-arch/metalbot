@@ -1,4 +1,4 @@
-const { Client, GatewayIntentBits, REST, Routes, SlashCommandBuilder, ChannelType, PermissionFlagsBits } = require('discord.js');
+const { Client, GatewayIntentBits, ChannelType, PermissionFlagsBits } = require('discord.js');
 const axios = require('axios');
 const FormData = require('form-data');
 const http = require('http'); 
@@ -6,7 +6,6 @@ const http = require('http');
 // Configurações principais puxadas do seu painel do Render
 const OWNER_ID = '1522577752916496476';
 const TOKEN = process.env.TOKEN; 
-const CLIENT_ID = process.env.CLIENT_ID; 
 
 // Suas chaves do Vectorizer.AI inseridas diretamente
 const VECTORIZER_API_ID = 'vkvqc2s3evqv89a';
@@ -18,7 +17,7 @@ const VECTORIZER_API_SECRET = 'hnq4d5kftg2m579bnsbeddujma2qlpadmm6fkquohi07lbivd
 const PORT = process.env.PORT || 3000;
 http.createServer((req, res) => {
     res.writeHead(200, { 'Content-Type': 'text/plain' });
-    res.end('Metalbot Online 24/7!\n');
+    res.end('Metalbot Ativo 24/7 - Sistema de Mencao Otimizado\n');
 }).listen(PORT, () => {
     console.log(`Servidor HTTP ativo na porta ${PORT}. Pronto para receber pings!`);
 });
@@ -28,53 +27,16 @@ const client = new Client({
     intents: [
         GatewayIntentBits.Guilds,
         GatewayIntentBits.GuildMessages,
-        GatewayIntentBits.MessageContent
+        GatewayIntentBits.MessageContent // Ativa a leitura do conteúdo das mensagens
     ]
 });
 
 let logChannelId = null;
 
-// Definição dos comandos / do bot
-const commands = [
-    new SlashCommandBuilder()
-        .setName('versao')
-        .setDescription('Mostra a versão atual do bot.'),
-    new SlashCommandBuilder()
-        .setName('online')
-        .setDescription('Verifica se o bot está respondendo normalmente.'),
-    new SlashCommandBuilder()
-        .setName('erros_criticos')
-        .setDescription('Cria um canal restrito para logs de erros críticos do sistema.')
-        .setDefaultMemberPermissions(PermissionFlagsBits.Administrator),
-    new SlashCommandBuilder()
-        .setName('vetorizar')
-        .setDescription('Transforma uma imagem em vetor profissional (SVG) com fundo transparente.')
-        .addAttachmentOption(option => 
-            option.setName('imagem')
-                .setDescription('Envie a imagem (PNG/JPG) que deseja vetorizar')
-                .setRequired(true))
-].map(command => command.toJSON());
-
 // Evento quando o bot conecta no Discord
 client.once('ready', async () => {
     console.log(`Bot logado com sucesso como: ${client.user.tag}`);
-
-    // Registra os comandos automaticamente usando as variáveis salvas no Render
-    if (TOKEN && CLIENT_ID) {
-        const rest = new REST({ version: '10' }).setToken(TOKEN);
-        try {
-            console.log('Iniciando o registro dos comandos / (Slash Commands)...');
-            await rest.put(
-                Routes.applicationCommands(CLIENT_ID),
-                { body: commands },
-            );
-            console.log('Comandos / registrados com sucesso globalmente!');
-        } catch (error) {
-            console.error('Erro ao registrar comandos:', error);
-        }
-    } else {
-        console.log('⚠️ Erro: CLIENT_ID ou TOKEN faltando no painel do Render.');
-    }
+    console.log('Sistema pronto! Escutando marcas com @ para vetorizacao direta.');
 
     const GUILD_ID = '1522581516532584538';
     let msgConvite = '';
@@ -97,80 +59,82 @@ client.once('ready', async () => {
     try {
         const owner = await client.users.fetch(OWNER_ID);
         if (owner) {
-            await owner.send(`🟢 **Notificação do Sistema:** O bot está online no Render!${msgConvite}`);
+            await owner.send(`🟢 **Notificação do Sistema:** O bot está online no Render! Monitoramento por menção ativo.${msgConvite}`);
         }
     } catch (dmError) {
         console.error(`Não foi possível enviar DM para o Owner.`, dmError);
     }
 });
 
-// Execução dos comandos slash
-client.on('interactionCreate', async interaction => {
-    if (!interaction.isChatInputCommand()) return;
-    const { commandName, guild } = interaction;
+// MONITORAMENTO DE MENSAGENS (Substitui os comandos barra)
+client.on('messageCreate', async (message) => {
+    // Ignora mensagens do próprio bot
+    if (message.author.bot) return;
 
-    if (commandName === 'versao') {
-        return interaction.reply({ content: `🤖 **Versão Atual:** v1.0.0\n⚙️ Engine: Node.js\n🚀 Hospedagem: Render`, ephemeral: true });
-    }
+    // Verifica se o bot foi mencionado na mensagem
+    if (message.mentions.has(client.user)) {
+        
+        // Pega a imagem anexada na mensagem
+        const imagem = message.attachments.first();
 
-    if (commandName === 'online') {
-        return interaction.reply({ content: `🟢 **Bot Online!**\n⏱️ Latência: \`${client.ws.ping}ms\``, ephemeral: true });
-    }
-
-    if (commandName === 'erros_criticos') {
-        await interaction.deferReply({ ephemeral: true });
-        try {
-            const channel = await guild.channels.create({
-                name: '🚨-erros-criticos',
-                type: ChannelType.GuildText,
-                permissionOverwrites: [
-                    { id: guild.id, deny: [PermissionFlagsBits.ViewChannel] },
-                    { id: interaction.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.ReadMessageHistory] },
-                    { id: client.user.id, allow: [PermissionFlagsBits.ViewChannel, PermissionFlagsBits.SendMessages] }
-                ],
-            });
-            logChannelId = channel.id;
-            return interaction.editReply({ content: `✅ Canal de logs criado: ${channel}.` });
-        } catch (error) {
-            return interaction.editReply({ content: `❌ Falha ao criar o canal.` });
-        }
-    }
-
-    if (commandName === 'vetorizar') {
-        await interaction.deferReply(); 
-        const imagem = interaction.options.getAttachment('imagem');
-
-        if (!imagem.contentType.startsWith('image/')) {
-            return interaction.editReply({ content: '❌ Envie uma imagem válida (PNG ou JPG).' });
+        // Se marcou o bot mas não mandou nenhuma imagem
+        if (!imagem) {
+            return message.reply('❌ Você precisa me marcar e **anexar uma imagem** (PNG ou JPG) na mesma mensagem para eu vetorizar!');
         }
 
+        // Verifica se o arquivo enviado é realmente uma imagem
+        if (!imagem.contentType || !imagem.contentType.startsWith('image/')) {
+            return message.reply('❌ O arquivo enviado não é uma imagem válida. Envie um PNG ou JPG.');
+        }
+
+        // Avisa que começou a trabalhar na imagem
+        const msgAviso = await message.reply('🎨 Entendido! Baixando sua imagem e iniciando o processo de vetorização profissional com fundo transparente...');
+
         try {
+            // 1. Baixa a imagem do servidor do Discord
             const responseImagem = await axios.get(imagem.url, { responseType: 'stream' });
+            
+            // 2. Prepara o formulário para enviar para a IA
             const form = new FormData();
             form.append('image', responseImagem.data);
-            form.append('mode', 'test'); 
+            
+            // CONFIGURAÇÃO DA IA: Força o processamento completo focado em alta qualidade de elementos
+            form.append('mode', 'production'); 
 
+            console.log(`Enviando imagem de ${message.author.tag} para a API do Vectorizer.AI...`);
+
+            // 3. Faz a requisição na API do Vectorizer.AI
             const apiResponse = await axios.post('https://vectorizer.ai/api/v1/vectorize', form, {
                 headers: { ...form.getHeaders() },
                 auth: {
                     username: VECTORIZER_API_ID,
                     password: VECTORIZER_API_SECRET
                 },
-                responseType: 'arraybuffer'
+                responseType: 'arraybuffer' // Recebe o arquivo SVG puro de volta
             });
 
-            await interaction.editReply({
-                content: `🎨 Imagem vetorizada com sucesso, ${interaction.user}!`,
-                files: [{ attachment: Buffer.from(apiResponse.data), name: 'resultado_vetorizado.svg' }]
+            // 4. Apaga a mensagem de aviso e envia o resultado final
+            await msgAviso.delete().catch(() => {});
+            
+            await message.reply({
+                content: `✅ **Vetorização concluída com sucesso, ${message.author}!** Elementos separados e fundo convertido em transparente (SVG).`,
+                files: [{ attachment: Buffer.from(apiResponse.data), name: 'resultado_transparente.svg' }]
             });
+
+            console.log('SVG gerado e entregue com sucesso!');
+
         } catch (error) {
+            console.error('Erro ao processar na API:', error.message);
+            await msgAviso.delete().catch(() => {});
+            
             if (logChannelId) reportarErroCritico('API Vectorizer.AI', error);
-            return interaction.editReply({ content: '❌ Erro ao processar a imagem na IA do Vectorizer.' });
+            
+            return message.reply('❌ Ocorreu um erro ao processar os elementos na IA do Vectorizer. Verifique se a imagem original não está corrompida.');
         }
     }
 });
 
-// Sistema de captura de erros
+// Sistema de captura e relatório de erros
 async function reportarErroCritico(origem, erro) {
     if (logChannelId) {
         try {
